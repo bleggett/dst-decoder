@@ -11,8 +11,8 @@ jobs:
     name: Release-plz release
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: read
+      contents: write # Needed to write release artifacts
+      id-token: write # Needed for trusted publishing
     steps:
       - &checkout
         name: Checkout repository
@@ -35,8 +35,9 @@ jobs:
     name: Release-plz PR
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      contents: write      # Needed to write release artifacts
+      id-token: write      # Needed for trusted publishing
+      pull-requests: write # Needed to create pull requests
     concurrency:
       group: release-plz-${{ github.ref }}
       cancel-in-progress: false
