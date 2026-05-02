@@ -2,9 +2,8 @@
 name = "dst-decoder"
 version = "0.1.0"
 edition = "2024"
-description = "This is a Rust implementation of the MPEG-4 Part 3 Subpart 10 Direct Stream Transfer (DST) Audio compression format."
+description = "A Rust implementation of the MPEG-4 Part 3 Subpart 10 Direct Stream Transfer (DST) Audio compression format."
 license = "Apache-2.0"
-license-file= "LICENSE"
 repository = "https://github.com/bleggett/dst-decoder"
 
 [dependencies]
