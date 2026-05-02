@@ -21,22 +21,43 @@ fn max_nr_of_ptables(nr_channels: usize) -> usize {
 // ERRORS
 // ============================================================================
 
+/// Errors that can be raised while parsing or decoding a DST frame.
+///
+/// Each variant maps to a specific malformed-bitstream condition checked
+/// by the spec; the [`Display`](std::fmt::Display) impl yields a human-
+/// readable message. These are wrapped by [`anyhow::Error`] in the public
+/// API (see [`DstDecoder::decode_frame`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DstError {
+    /// The bit reader was advanced past the end of the input frame.
     NegativeBitAllocation,
+    /// A channel declared more segments than the spec maximum.
     TooManySegments,
+    /// Segment resolution field is zero or exceeds the frame length.
     InvalidSegmentResolution,
+    /// Segment length is below the minimum or overflows the frame.
     InvalidSegmentLength,
+    /// Number of distinct filter or probability tables exceeds the spec maximum.
     TooManyTables,
+    /// Segment references a table index that hasn't been allocated yet.
     InvalidTableNumber,
+    /// Per-channel mapping flagged as varying but is identical across all channels.
     InvalidChannelMapping,
+    /// Filter and probability segment counts disagree when reuse was signalled.
     SegmentNumberMismatch,
+    /// Filter coefficient coding method is out of range or has invalid predictor order.
     InvalidCoefficientCoding,
+    /// Decoded filter coefficient falls outside the legal signed range.
     InvalidCoefficientRange,
+    /// Probability table coding method is out of range or has invalid predictor order.
     InvalidPtableCoding,
+    /// Decoded probability entry falls outside the legal range `[1, 128]`.
     InvalidPtableRange,
+    /// The trailing stuffing bits in an uncompressed-DSD frame were not all zero.
     InvalidStuffingPattern,
+    /// The first byte of the arithmetic-coded payload was non-zero.
     InvalidArithmeticCode,
+    /// End-of-frame trailing-bit check in the arithmetic decoder failed.
     ArithmeticDecoder,
 }
 
@@ -364,6 +385,25 @@ struct FrameHeader {
 // DST DECODER
 // ============================================================================
 
+/// Stateful decoder for MPEG-4 DST frames.
+///
+/// One instance decodes any number of frames sequentially for a fixed
+/// channel count and DSD sample rate. The decoder holds preallocated
+/// scratch buffers sized at construction, so per-frame decoding does not
+/// allocate on the hot path. Instances are not internally synchronised;
+/// for parallel decoding, use one decoder per thread.
+///
+/// # Example
+///
+/// ```no_run
+/// use dst_decoder::decoder::DstDecoder;
+///
+/// let mut decoder = DstDecoder::new(2, 2_822_400).unwrap();
+/// let mut dsd = vec![0u8; decoder.dsd_frame_bytes()];
+/// # let dst_frame: &[u8] = &[];
+/// let written = decoder.decode_frame(dst_frame, &mut dsd).unwrap();
+/// assert_eq!(written, decoder.dsd_frame_bytes());
+/// ```
 pub struct DstDecoder {
     frame_hdr: FrameHeader,
     str_filter: CodedTable,
@@ -392,6 +432,23 @@ pub struct DstDecoder {
 }
 
 impl DstDecoder {
+    /// Construct a decoder for a stream with the given channel count and
+    /// DSD sample rate.
+    ///
+    /// `channel_count` must be in `1..=MAX_CHANNELS` (6). `sample_rate`
+    /// must be one of the three DSD rates the spec defines: 2_822_400
+    /// (DSD64), 5_644_800 (DSD128), or 11_289_600 (DSD256). Any other
+    /// value is rejected.
+    ///
+    /// On construction the decoder allocates its full scratch space (FIR
+    /// status tables, AC buffers, per-bit table maps), sized from these
+    /// two parameters; subsequent [`decode_frame`](Self::decode_frame)
+    /// calls do no further heap work.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `channel_count` is out of range or
+    /// `sample_rate` is not a supported DSD rate.
     pub fn new(channel_count: usize, sample_rate: usize) -> Result<Self> {
         if channel_count == 0 || channel_count > consts::MAX_CHANNELS {
             bail!("Invalid channel count: {}", channel_count);
@@ -438,13 +495,43 @@ impl DstDecoder {
         })
     }
 
-    /// Number of bytes the decoder writes per frame: max_frame_len * channels.
+    /// Number of DSD bytes a single decoded frame occupies.
+    ///
+    /// Equal to `max_frame_len * channel_count`, where `max_frame_len`
+    /// is `588 * Fs44 / 8` per the MPEG-4 DST spec (Fs44 ∈ {64, 128,
+    /// 256}). Use this to size the output buffer passed to
+    /// [`decode_frame`](Self::decode_frame).
     pub fn dsd_frame_bytes(&self) -> usize {
         (self.frame_hdr.max_frame_len as usize) * self.channel_count
     }
 
-    /// Decode one DST frame, writing channel-interleaved DSD bytes to `dsd_data`.
-    /// Returns number of bytes written.
+    /// Decode one DST frame into channel-interleaved DSD bytes.
+    ///
+    /// `dst_data` is the compressed frame payload (the DST elementary
+    /// stream unit, without any container framing). `dsd_data` must be
+    /// at least [`dsd_frame_bytes`](Self::dsd_frame_bytes) long; on
+    /// success the first that-many bytes are filled with DSD samples,
+    /// channel-interleaved at byte granularity (eight samples per byte,
+    /// MSB first). Trailing bytes in an oversized buffer are left
+    /// untouched.
+    ///
+    /// The decoder transparently handles both DST-coded frames (the
+    /// common case) and uncompressed DSD frames (per the spec's escape
+    /// hatch).
+    ///
+    /// # Returns
+    ///
+    /// Number of DSD bytes written, always equal to
+    /// [`dsd_frame_bytes`](Self::dsd_frame_bytes).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `dsd_data` is too small, or if the frame is
+    /// malformed. On decode failure the output buffer is overwritten
+    /// with `0x55` (DSD silence) — matching the C reference's behaviour
+    /// — so a caller that ignores the error still gets a deterministic
+    /// frame of silence rather than garbage. The underlying error
+    /// downcasts to [`DstError`] for malformed-bitstream cases.
     pub fn decode_frame(&mut self, dst_data: &[u8], dsd_data: &mut [u8]) -> Result<usize> {
         let nr_of_channels = self.frame_hdr.nr_of_channels as usize;
         let max_frame_len = self.frame_hdr.max_frame_len;
