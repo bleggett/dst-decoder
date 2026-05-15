@@ -214,14 +214,24 @@ impl AcData {
             self.a = h;
             1u8
         };
-        // Renormalize. `cb` is zero-padded past `fs` by the caller, so the
-        // bounds check the C reference does (`if cbptr < fs`) is unnecessary
-        // — past-end reads return 0, matching the spec's "insert zero in LSB
-        // of C" rule.
-        let _ = fs;
+        // Renormalize. The 64-byte zero pad the caller appends to `a_data`
+        // is enough headroom for the *average* frame, but real-disc DST
+        // streams routinely drive `cbptr` past `n + 64` over the course
+        // of a long track and then panic with `index out of bounds`.
+        //
+        // Restore the canonical guard the C/C++ reference implementations
+        // use (matches sacd-ripper `libdstdec/dst_ac.c::DST_ACDecodeBit`,
+        // foo_input_sacd `libdstdec/ac.h::decodeBit_Decode`, and the
+        // ISO/IEC 14496-3 Subpart 10 reference text): when `cbptr` runs
+        // past the valid bit count `fs`, leave a zero in the LSB of C
+        // ("insert zero in LSB of C if reading past the end of the
+        // arithmetic code").
         while self.a < consts::HALF {
             self.a <<= 1;
-            self.c = (self.c << 1) | cb[self.cbptr as usize] as u32;
+            self.c <<= 1;
+            if self.cbptr < fs {
+                self.c |= cb[self.cbptr as usize] as u32;
+            }
             self.cbptr += 1;
         }
         b
