@@ -214,14 +214,16 @@ impl AcData {
             self.a = h;
             1u8
         };
-        // Renormalize. `cb` is zero-padded past `fs` by the caller, so the
-        // bounds check the C reference does (`if cbptr < fs`) is unnecessary
-        // — past-end reads return 0, matching the spec's "insert zero in LSB
-        // of C" rule.
-        let _ = fs;
+        // Renormalize. Once `cbptr` runs past `fs` (which happens for the
+        // remainder of any highly compressible frame, e.g. near-silence),
+        // shift a zero into the LSB of C per the spec; `cbptr` still
+        // advances so `flush` can validate the end-of-frame position.
         while self.a < consts::HALF {
             self.a <<= 1;
-            self.c = (self.c << 1) | cb[self.cbptr as usize] as u32;
+            self.c <<= 1;
+            if self.cbptr < fs {
+                self.c |= cb[self.cbptr as usize] as u32;
+            }
             self.cbptr += 1;
         }
         b
@@ -1021,11 +1023,7 @@ impl DstDecoder {
     fn read_arithmetic_coded_data(&mut self, reader: &mut BitReader) -> Result<()> {
         let n = self.a_data_len.max(0) as usize;
         self.a_data.clear();
-        // Reserve room for the AC bits + a small zero-padded tail so
-        // `decode_bit` can read past the end without a bounds check. The
-        // renormalise loop reads at most ABITS bits beyond cbptr, plus the
-        // flush walk; 64 zero bytes are plenty.
-        self.a_data.resize(n + 64, 0);
+        self.a_data.resize(n, 0);
         // Fast path: pull 8 bits at a time and expand them MSB-first to
         // a-data bytes. `read_byte` (= `read_uint(8)`) handles arbitrary
         // bit alignment — it spans byte boundaries when needed — so this
