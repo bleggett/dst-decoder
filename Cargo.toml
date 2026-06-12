@@ -1,6 +1,6 @@
 [package]
 name = "dst-decoder"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "A Rust implementation of the MPEG-4 Part 3 Subpart 10 Direct Stream Transfer (DST) Audio compression format."
 license = "Apache-2.0"
